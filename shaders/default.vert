@@ -1,32 +1,42 @@
 #version 300 es
 
-layout (location=0) in vec3 position;
-layout (location=1) in vec3 normal;
-layout (location=2) in vec4 tangent;
-layout (location=3) in vec2 texCoord;
-layout (location=4) in vec4 joints;
-layout (location=5) in vec4 weights;
+layout (location=0) in vec3 vPosition;
+layout (location=1) in vec3 vNormal;
+layout (location=2) in vec4 vTangent;
+layout (location=3) in vec2 vTexCoord;
+layout (location=4) in vec4 vJoints;
+layout (location=5) in vec4 vWeights;
 
-uniform mat4 pMatrix;
-uniform mat4 mvMatrix;
-uniform mat4 jointTransform[50];
-uniform mat4 mMatrix;
-uniform int isAnimated;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uViewMatrix;
+uniform mat4 uModelMatrix;
+uniform mat4 uJointTransform[50];
 
-out vec2 texCoords;
+uniform int uIsAnimated;
+
+out vec2 texCoord;
+out vec3 normal;
+out vec3 position;
+out mat3 tangent;
 
 void main() {
-    vec4 totalLocalPos = vec4(position, 1.0);
-    vec4 totalNormal = vec4(normal, 0.0);
-
     mat4 skinMatrix = mat4(1.0);
-    if (isAnimated == 1) {
-        skinMatrix = weights.x * jointTransform[int(joints.x)] +
-            weights.y * jointTransform[int(joints.y)] +
-            weights.z * jointTransform[int(joints.z)] +
-            weights.w * jointTransform[int(joints.w)];
+    if (uIsAnimated == 1) {
+        skinMatrix = vWeights.x * uJointTransform[int(vJoints.x)] +
+            vWeights.y * uJointTransform[int(vJoints.y)] +
+            vWeights.z * uJointTransform[int(vJoints.z)] +
+            vWeights.w * uJointTransform[int(vJoints.w)];
     }
 
-    texCoords = texCoord;
-    gl_Position = pMatrix * mvMatrix * mMatrix * skinMatrix * totalLocalPos;
+    mat4 normalMatrix = transpose(inverse(skinMatrix));
+
+    vec3 normalW = normalize(vec3(normalMatrix * vec4(vNormal.xyz, 0.0)));
+    vec3 tangentW = normalize(vec3(uModelMatrix * vec4(vTangent.xyz, 0.0)));
+    vec3 bitangentW = cross(normalW, tangentW) * vTangent.w;
+
+    tangent = mat3(tangentW, bitangentW, normalW);
+    texCoord = vTexCoord;
+    normal = normalize(mat3(normalMatrix) * vec3(skinMatrix * vec4(vNormal, 1.0)));
+    position = vPosition;
+    gl_Position = uProjectionMatrix * uViewMatrix * uModelMatrix * skinMatrix * vec4(vPosition, 1.0);
 }
