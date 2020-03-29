@@ -2,10 +2,9 @@
 
 precision highp float;
 
-#define LIGHT_INTENSITY vec3(2.0)
-#define LIGHT_DIRECTION vec3(-0.7, -0.7, -1.0)
+#define LIGHT_INTENSITY 1.0
+#define LIGHT_DIRECTION vec3(-0.7, -0.7, 1.0)
 #define LIGHT_COLOR vec3(1.0)
-#define LIGHT_AMBIENT vec3(0.08)
 #define M_PI 3.141592653589793
 
 uniform sampler2D uBaseColorTexture;
@@ -25,6 +24,10 @@ uniform int uHasNormalTexture;
 uniform sampler2D uOcclusionTexture;
 uniform int uHasOcclusionTexture;
 
+uniform sampler2D uBrdfLut;
+uniform samplerCube uEnvironmentDiffuse;
+uniform samplerCube uEnvironmentSpecular;
+
 uniform vec3 uCameraPosition;
 
 in vec2 texCoord;
@@ -34,14 +37,23 @@ in mat3 tangent;
 
 out vec4 fragColor;
 
-struct MaterialInfo
-{
+struct MaterialInfo {
     vec3 reflectance0;
     float alphaRoughness;
     vec3 diffuseColor;
     vec3 specularColor;
     vec3 reflectance90;
+    float perceptualRoughness;
 };
+
+
+vec3 linearToSrgb(vec3 color) {
+    return pow(color, vec3(1.0 / 2.2));
+}
+
+vec4 srgbToLinear(vec4 srgbIn) {
+    return vec4(pow(srgbIn.xyz, vec3(2.2)), srgbIn.w);
+}
 
 vec3 specularReflection(MaterialInfo materialInfo, float VdotH) {
     return materialInfo.reflectance0 + (materialInfo.reflectance90 - materialInfo.reflectance0) * pow(clamp(1.0 - VdotH, 0.0, 1.0), 5.0);
@@ -66,8 +78,7 @@ vec3 calculateDirectionalLight(MaterialInfo materialInfo, vec3 normal, vec3 view
     float VdotH = clamp(dot(v, h), 0.0, 1.0);
     float NdotV = clamp(dot(n, v), 0.0, 1.0);
 
-    if (NdotL > 0.0 || NdotV > 0.0)
-    {
+    if (NdotL > 0.0 || NdotV > 0.0) {
         vec3 F = specularReflection(materialInfo, VdotH);
         float D = microfacetDistribution(materialInfo, NdotH);
         vec3 diffuseContrib = (1.0 - F) * (materialInfo.diffuseColor / M_PI);
@@ -79,9 +90,30 @@ vec3 calculateDirectionalLight(MaterialInfo materialInfo, vec3 normal, vec3 view
     return vec3(0.0);
 }
 
+vec3 getIBLContribution(MaterialInfo materialInfo, vec3 n, vec3 v) {
+    float NdotV = clamp(dot(n, v), 0.0, 1.0);
+
+    float lod = clamp(materialInfo.perceptualRoughness * 4.0, 0.0, 4.0);
+    vec3 reflection = normalize(reflect(-v, n));
+
+    vec2 brdfSamplePoint = clamp(vec2(NdotV, materialInfo.perceptualRoughness), vec2(0.0, 0.0), vec2(1.0, 1.0));
+
+    vec2 brdf = texture(uBrdfLut, brdfSamplePoint).rg;
+    vec4 diffuseSample = vec4(0.1, 0.1, 0.1, 1.0);
+    vec4 specularSample = vec4(0.3);
+
+    vec3 diffuseLight = srgbToLinear(texture(uEnvironmentDiffuse, n)).rgb;
+    vec3 specularLight = srgbToLinear(texture(uEnvironmentSpecular, n)).rgb;
+
+    vec3 diffuse = diffuseLight * materialInfo.diffuseColor;
+    vec3 specular = specularLight * (materialInfo.specularColor * brdf.x + brdf.y);
+
+    return diffuse + specular;
+}
+
 vec4 getBaseColor() {
     if (uHasBaseColorTexture == 1) {
-        return texture(uBaseColorTexture, texCoord);
+        return srgbToLinear(texture(uBaseColorTexture, texCoord));
     }
     return uBaseColor;
 }
@@ -111,26 +143,25 @@ MaterialInfo getMaterialInfo() {
     vec3 f0 = vec3(0.04);
 
     vec2 mrSample = getRoughnessMetallic();
-    float perceptualRoughness = clamp(mrSample[0], 0.0, 1.0);
-    float metallic = clamp(mrSample[1], 0.0, 1.0) * 0.5;
+    float perceptualRoughness = clamp(mrSample.r, 0.0, 1.0);
+    float metallic = clamp(mrSample.g, 0.0, 1.0);
 
     vec4 baseColor = getBaseColor();
-    baseColor = vec4(pow(baseColor.rgb, vec3(2.2)), 1.0);
-
     vec3 diffuseColor = baseColor.rgb * (vec3(1.0) - f0) * (1.0 - metallic);
     vec3 specularColor = mix(f0, baseColor.rgb, metallic);
 
     float reflectance = max(max(specularColor.r, specularColor.g), specularColor.b);
     vec3 reflectance0 = specularColor.rgb;
     vec3 reflectance90 = vec3(clamp(reflectance * 50.0, 0.0, 1.0));
-    float alphaRoughness = perceptualRoughness * perceptualRoughness * 3.0;
+    float alphaRoughness = perceptualRoughness * perceptualRoughness;
 
     return MaterialInfo(
         reflectance0,
         alphaRoughness,
         diffuseColor,
         specularColor,
-        reflectance90
+        reflectance90,
+        perceptualRoughness
     );
 }
 
@@ -140,16 +171,16 @@ void main() {
     vec3 n = normal;
     if (uHasNormalTexture == 1) {
         n = texture(uNormalTexture, texCoord).rgb;
-        n = normalize(tangent * ((2.0 * n - 1.0)));
+        n = normalize(tangent * (2.0 * n - 1.0));
     }
 
     vec3 view = normalize(uCameraPosition - position);
     vec3 color = calculateDirectionalLight(materialInfo, n, view);
+
+    color += getIBLContribution(materialInfo, n, view);
     color += getEmissive().rgb;
-    color += LIGHT_AMBIENT * materialInfo.diffuseColor;
-
     color = clamp(color, 0.0, 1.0);
-    color = mix(color, color * getOcclusion(), 1.0);
+    color = mix(color, color * 1.0, 1.0);
 
-    fragColor = vec4(pow(color, vec3(1.0 / 2.2)), 1.0);
+    fragColor = vec4(linearToSrgb(color), 1.0);
 }
