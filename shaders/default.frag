@@ -102,8 +102,8 @@ vec3 getIBLContribution(MaterialInfo materialInfo, vec3 n, vec3 v) {
     vec4 diffuseSample = vec4(0.1, 0.1, 0.1, 1.0);
     vec4 specularSample = vec4(0.3);
 
-    vec3 diffuseLight = srgbToLinear(texture(uEnvironmentDiffuse, n) * 0.2).rgb;
-    vec3 specularLight = srgbToLinear(texture(uEnvironmentSpecular, n) * 0.3).rgb;
+    vec3 diffuseLight = srgbToLinear(texture(uEnvironmentDiffuse, n)).rgb * 0.1;
+    vec3 specularLight = srgbToLinear(texture(uEnvironmentSpecular, n)).rgb * 0.2;
 
     vec3 diffuse = diffuseLight * materialInfo.diffuseColor;
     vec3 specular = specularLight * (materialInfo.specularColor * brdf.x + brdf.y);
@@ -180,7 +180,7 @@ void main() {
     color += getIBLContribution(materialInfo, n, view);
     color += getEmissive().rgb;
     color = clamp(color, 0.0, 1.0);
-    color = mix(color, color * 1.0, 1.0);
+    color = mix(color, color * getOcclusion(), 1.0);
 
     fragColor = vec4(linearToSrgb(color), 1.0);
 }
